@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: isolation-api
+  namespace: avd-net-prod
+  labels:
+    app: isolation-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: isolation-api
+  template:
+    metadata:
+      labels:
+        app: isolation-api
+    spec:
+      containers:
+      - name: gateway
+        image: acrnet.azurecr.io/devopstrio/isolation-api:v1.2.0
+        ports:
+        - containerPort: 8000
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: net-secrets
+              key: db-url
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "1000m"
+            memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: isolation-api-svc
+  namespace: avd-net-prod
+spec:
+  selector:
+    app: isolation-api
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8000
+  type: LoadBalancer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: network-engine
+  namespace: avd-net-prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      component: net-engine
+  template:
+    metadata:
+      labels:
+        component: net-engine
+    spec:
+      containers:
+      - name: worker
+        image: acrnet.azurecr.io/devopstrio/network-engine:latest
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: net-ingress
+  namespace: avd-net-prod
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - net.devopstrio.co.uk
+    secretName: net-portal-tls
+  rules:
+  - host: net.devopstrio.co.uk
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: isolation-api-svc
+            port:
+              number: 80

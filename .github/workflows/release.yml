@@ -1,0 +1,72 @@
+name: 'AVD Network Isolation CD'
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'apps/**'
+      - 'backend/**'
+      - 'terraform/**'
+      - '.github/workflows/deploy.yml'
+
+jobs:
+  validate-and-plan:
+    name: 'Security & IaC Validation'
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Source
+      uses: actions/checkout@v3
+
+    - name: Terraform Lint
+      uses: terraform-linters/setup-tflint@v2
+      with:
+        tflint_version: v0.44.1
+
+    - name: Terraform Init & Plan
+      run: |
+        terraform init
+        terraform plan -out=tfplan
+      working-directory: ./terraform
+      env:
+        ARM_CLIENT_ID: ${{ secrets.AZ_CLIENT_ID }}
+        ARM_CLIENT_SECRET: ${{ secrets.AZ_CLIENT_SECRET }}
+
+  build-and-push:
+    name: 'Container Release'
+    needs: validate-and-plan
+    runs-on: ubuntu-latest
+    steps:
+    - name: ACR Login
+      uses: azure/docker-login@v1
+      with:
+        login-server: acrnet.azurecr.io
+        username: ${{ secrets.ACR_USERNAME }}
+        password: ${{ secrets.ACR_PASSWORD }}
+
+    - name: Build Isolation API
+      run: |
+        docker build -t acrnet.azurecr.io/devopstrio/isolation-api:${{ github.sha }} ./backend
+        docker push acrnet.azurecr.io/devopstrio/isolation-api:${{ github.sha }}
+
+  helm-deployment:
+    name: 'Platform Deployment'
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    - name: AKS Context
+      uses: azure/aks-set-context@v3
+      with:
+        resource-group: 'rg-avd-network-hub-prd'
+        cluster-name: 'aks-avd-net-prd'
+
+    - name: Helm Rollout
+      run: |
+        helm upgrade --install avd-isolation ./helm/avd-network-isolation \
+        --namespace avd-net-prod --create-namespace \
+        --set api.image.tag=${{ github.sha }}
